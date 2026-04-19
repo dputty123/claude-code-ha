@@ -2,6 +2,8 @@
 
 CLI tools and configuration for using [Claude Code](https://claude.com/claude-code) with Home Assistant OS.
 
+> Fork of [danbuhler/claude-code-ha](https://github.com/danbuhler/claude-code-ha), updated for Claude Code's native installer (Anthropic deprecated the npm package in favor of native binaries with auto-update).
+
 ## What's Included
 
 | File | Description |
@@ -9,7 +11,7 @@ CLI tools and configuration for using [Claude Code](https://claude.com/claude-co
 | `bin/ha-api` | REST API CLI for quick state/service operations |
 | `bin/ha-ws` | WebSocket CLI for registry management and detailed lookups |
 | `bin/lovelace-sync` | Push dashboard changes to HA without restart |
-| `install.sh` | Setup script for HA OS (re-run after updates) |
+| `install.sh` | Setup script for HA OS (re-run after HA updates) |
 | `CLAUDE.md` | Instructions file that Claude Code reads automatically |
 
 ## Prerequisites
@@ -24,8 +26,11 @@ Install the "Terminal & SSH" add-on from the Home Assistant Add-on Store, then c
 ```yaml
 apks:
   - gcompat
+  - libgcc
   - libstdc++
   - curl
+  - jq
+  - ripgrep
   - procps
   - coreutils
   - tar
@@ -34,6 +39,8 @@ apks:
   - py3-pip
   - fzf
 ```
+
+> **Note on Alpine/musl:** `libgcc`, `libstdc++`, and `ripgrep` are required for the Claude Code native binary to run on Home Assistant OS (which is Alpine-based). See [official docs](https://code.claude.com/docs/en/setup).
 
 3. Save and restart the add-on
 
@@ -54,9 +61,9 @@ apks:
 cd /config
 
 # Clone this repo
-git clone https://github.com/danbuhler/claude-code-ha.git
+git clone https://github.com/dputty123/claude-code-ha.git
 
-# Run setup (installs dependencies + Claude Code)
+# Run setup (installs dependencies + Claude Code native binary)
 cd claude-code-ha
 ./install.sh
 
@@ -64,26 +71,49 @@ cd claude-code-ha
 nano /config/.env
 ```
 
+Then authenticate Claude Code:
+
+```bash
+source /etc/profile.d/claude-ha.sh  # or start a new shell
+claude                              # follow browser login prompts
+```
+
 ### Manual Installation (what install.sh does for you)
 
 ```bash
-# Install dependencies
-apk add python3 py3-pip curl jq nodejs npm
+# Install system dependencies (Alpine/HA OS)
+apk add python3 py3-pip curl jq libgcc libstdc++ ripgrep
 pip3 install websockets --break-system-packages
 
-# Install Claude Code
-npm install -g @anthropic-ai/claude-code
+# Install Claude Code (native binary, auto-updates)
+curl -fsSL https://claude.ai/install.sh | bash
 
-# Copy scripts to PATH
-cp bin/* /usr/local/bin/
-chmod +x /usr/local/bin/ha-*
-chmod +x /usr/local/bin/lovelace-sync
+# Configure Claude Code to use system ripgrep (Alpine/musl requirement)
+mkdir -p ~/.claude
+cat > ~/.claude/settings.json <<'EOF'
+{ "env": { "USE_BUILTIN_RIPGREP": "0" } }
+EOF
+
+# Symlink our CLI tools into PATH
+ln -sf "$PWD/bin/ha-api" /usr/local/bin/ha-api
+ln -sf "$PWD/bin/ha-ws" /usr/local/bin/ha-ws
+ln -sf "$PWD/bin/lovelace-sync" /usr/local/bin/lovelace-sync
 
 # Copy CLAUDE.md and .env to your HA config directory
 cp CLAUDE.md /config/
 cp .env.example /config/.env
 nano /config/.env  # Add your token
 ```
+
+## Why Native Installer?
+
+As of early 2026, Anthropic [deprecated the npm package](https://code.claude.com/docs/en/setup) (`@anthropic-ai/claude-code`) in favor of a native binary installer:
+
+- **No Node.js/npm required** — one less moving part on HA OS
+- **Auto-updates in the background** — stays current without re-running install
+- **Same binary** — the npm package was just a wrapper around this binary anyway
+
+The npm path still works if you need it, but this repo standardizes on the native installer.
 
 ## Usage
 
@@ -194,10 +224,46 @@ HA_TOKEN=your_token_here
 
 ## After Home Assistant OS Updates
 
-HA OS updates reset the root filesystem, removing installed packages and PATH modifications. **Re-run `install.sh` after each HA OS update:**
+HA OS updates reset the root filesystem. This removes installed `apk` packages, `pip` packages, anything in `/usr/local/bin`, and PATH modifications in `/etc/profile.d`. **Re-run `install.sh` after each HA OS update** to put everything back.
+
+### Quick version
 
 ```bash
-cd /config/claude-code-ha  # or wherever you cloned it
+cd /config/claude-code-ha
+git pull                   # optional: grab any repo updates first
+./install.sh
+source /etc/profile.d/claude-ha.sh
+```
+
+That's it. The script is idempotent — safe to re-run any time.
+
+### Full walkthrough
+
+```bash
+# 1. SSH in (or open the Terminal add-on)
+
+# 2. Re-run the installer
+cd /config/claude-code-ha
+./install.sh
+
+# 3. Reload your shell environment (PATH + USE_BUILTIN_RIPGREP)
+source /etc/profile.d/claude-ha.sh
+#    ...or just close the terminal and open a new one
+
+# 4. Verify everything works
+which claude               # -> /root/.local/bin/claude (or /usr/local/bin/claude)
+claude --version           # prints a version number
+ha-api states | head       # HA CLI still works
+
+# 5. Start Claude Code
+claude
+```
+
+If you also want to pull the latest repo changes before reinstalling:
+
+```bash
+cd /config/claude-code-ha
+git pull origin main
 ./install.sh
 ```
 
@@ -205,9 +271,10 @@ cd /config/claude-code-ha  # or wherever you cloned it
 
 | Item | Action | On Re-run |
 |------|--------|-----------|
-| System packages (python3, nodejs, etc.) | Installs via apk | Reinstalls (needed after HA update) |
+| System packages (python3, libgcc, libstdc++, ripgrep, etc.) | Installs via apk | Reinstalls (needed after HA update) |
 | Python websockets | pip install | Reinstalls (needed after HA update) |
-| Claude Code | npm install -g | Reinstalls (needed after HA update) |
+| Claude Code (native binary) | curl installer | Skips if already installed (auto-updates itself) |
+| `~/.claude/settings.json` | Writes `USE_BUILTIN_RIPGREP=0` (Alpine/musl) | Skips if exists |
 | `ha-api`, `ha-ws`, `lovelace-sync` | **Symlinks** to repo's `bin/` | Recreates (safe) |
 | `CLAUDE.md` | **Copies** to `/config/` | Skips if exists (preserves customizations) |
 | `.env` | **Copies** template to `/config/.env` | Skips if exists (preserves your token) |
@@ -219,17 +286,47 @@ cd /config/claude-code-ha  # or wherever you cloned it
 
 ### What Persists Across HA Updates
 
-These survive in `/config`:
+These survive in `/config` (it's on the data partition, not the root filesystem):
 - The cloned repo itself
 - Your `.env` file (with your token)
 - Your customized `CLAUDE.md`
+- `/root/.local/bin/claude` (the Claude Code binary) — usually survives, but not guaranteed across major HA OS upgrades
+
+Re-running `install.sh` is idempotent either way: if the binary is there, it skips; if it's gone, it reinstalls.
+
+### Troubleshooting
+
+**`claude: command not found` after re-running install.sh**
+Your PATH didn't reload. Run `source /etc/profile.d/claude-ha.sh` or open a new shell.
+
+**`Error: ripgrep failed to execute` or similar musl/glibc error**
+The bundled ripgrep binary (glibc) can't run on Alpine (musl). Check that:
+1. `apk info ripgrep` shows it's installed (`install.sh` does this)
+2. `~/.claude/settings.json` contains `"USE_BUILTIN_RIPGREP": "0"` — if not, add it:
+   ```bash
+   mkdir -p ~/.claude
+   cat > ~/.claude/settings.json <<'EOF'
+   { "env": { "USE_BUILTIN_RIPGREP": "0" } }
+   EOF
+   ```
+3. `echo $USE_BUILTIN_RIPGREP` returns `0` in your current shell. If not, `source /etc/profile.d/claude-ha.sh`.
+
+**`pip3: command not found` during install.sh**
+The Terminal & SSH add-on's `apks:` list is missing `python3` and `py3-pip`. Add them (see [Prerequisites](#terminal--ssh-add-on-setup)) and restart the add-on.
+
+**`ha-api` or `ha-ws` fails with auth errors**
+Your `/config/.env` file is missing or has a stale token. HA tokens don't expire, but if you've revoked one or never set it, regenerate from your HA profile's Security tab and update `/config/.env`.
+
+**Claude Code says "not authenticated"**
+Auth state is in `~/.claude/` and usually persists, but a full HA OS reflash wipes it. Run `claude` and go through the browser login flow again.
 
 ## Requirements
 
-- Home Assistant (any installation with shell access)
+- Home Assistant OS (or any installation with shell access)
 - Python 3 with `websockets` package
-- `curl` and `jq` for ha-api
-- Node.js/npm for Claude Code
+- `curl`, `jq`, `ripgrep` for the CLI tools and Claude Code
+- `libgcc`, `libstdc++` (Alpine/musl only, required by Claude Code native binary)
+- A paid Claude account (Pro/Max/Team/Enterprise/Console) for Claude Code access
 
 ## License
 
