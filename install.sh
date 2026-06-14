@@ -134,6 +134,50 @@ if [ -f "/etc/profile.d/homeassistant.sh" ]; then
     sed -i 's/^ha banner/# ha banner/' /etc/profile.d/homeassistant.sh 2>/dev/null || true
 fi
 
+# Persistent Claude state: keep chat history, memory, and auth in /config
+# so they survive HA OS updates / SSH add-on container resets. Anything
+# in /root gets wiped; /config is the only guaranteed-persistent path.
+echo ""
+echo "Setting up persistent Claude state..."
+CLAUDE_PERSIST="$HA_CONFIG/.claude-data"
+CLAUDE_HOME="$HOME/.claude"
+
+if [ -L "$CLAUDE_HOME" ]; then
+    # Already a symlink — verify it points where we expect
+    TARGET="$(readlink -f "$CLAUDE_HOME")"
+    if [ "$TARGET" = "$CLAUDE_PERSIST" ]; then
+        echo "  [ok] $CLAUDE_HOME already symlinked to $CLAUDE_PERSIST"
+    else
+        echo "  [warn] $CLAUDE_HOME is a symlink to $TARGET (not $CLAUDE_PERSIST) — leaving alone"
+    fi
+elif [ ! -e "$CLAUDE_HOME" ] && [ -d "$CLAUDE_PERSIST" ]; then
+    # Fresh container after HA update: persistent data exists, just relink
+    ln -s "$CLAUDE_PERSIST" "$CLAUDE_HOME"
+    echo "  [symlink] $CLAUDE_HOME -> $CLAUDE_PERSIST (restored from previous session)"
+elif [ -d "$CLAUDE_HOME" ] && [ ! -e "$CLAUDE_PERSIST" ]; then
+    # First-time setup: migrate existing data to persistent location.
+    # Skipped automatically if Claude is currently running — script can't
+    # safely rm -rf the dir Claude is writing to. User runs the swap
+    # manually from a non-Claude shell.
+    echo "  [info] First-time setup: snapshotting $CLAUDE_HOME to $CLAUDE_PERSIST"
+    mkdir -p "$CLAUDE_PERSIST"
+    cp -a "$CLAUDE_HOME/." "$CLAUDE_PERSIST/"
+    echo "  [info] Snapshot done. To finish migration, run from a non-Claude shell:"
+    echo "         rm -rf $CLAUDE_HOME && ln -s $CLAUDE_PERSIST $CLAUDE_HOME"
+elif [ -d "$CLAUDE_HOME" ] && [ -d "$CLAUDE_PERSIST" ]; then
+    # Both exist — likely Claude wrote to /root after an HA update before
+    # install.sh got re-run. Don't auto-merge; warn the user.
+    echo "  [warn] Both $CLAUDE_HOME and $CLAUDE_PERSIST exist as real dirs."
+    echo "         Some session data may be in /root only (not persisted)."
+    echo "         To merge and relink, from a non-Claude shell:"
+    echo "         cp -an $CLAUDE_HOME/. $CLAUDE_PERSIST/ && rm -rf $CLAUDE_HOME && ln -s $CLAUDE_PERSIST $CLAUDE_HOME"
+else
+    # No /root/.claude and no persistent dir — first ever install.
+    mkdir -p "$CLAUDE_PERSIST"
+    ln -s "$CLAUDE_PERSIST" "$CLAUDE_HOME"
+    echo "  [symlink] $CLAUDE_HOME -> $CLAUDE_PERSIST (fresh)"
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
