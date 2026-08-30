@@ -88,10 +88,15 @@ pip3 install websockets --break-system-packages
 # Install Claude Code (native binary, auto-updates)
 curl -fsSL https://claude.ai/install.sh | bash
 
-# Configure Claude Code to use system ripgrep (Alpine/musl requirement)
+# Configure Claude Code: system ripgrep (Alpine/musl requirement) + stable
+# release channel (runs ~a week behind, skips releases with known regressions —
+# the right trade-off for a headless box you don't babysit)
 mkdir -p ~/.claude
 cat > ~/.claude/settings.json <<'EOF'
-{ "env": { "USE_BUILTIN_RIPGREP": "0" } }
+{
+  "autoUpdatesChannel": "stable",
+  "env": { "USE_BUILTIN_RIPGREP": "0" }
+}
 EOF
 
 # Symlink our CLI tools into PATH
@@ -114,6 +119,8 @@ As of early 2026, Anthropic [deprecated the npm package](https://code.claude.com
 - **Same binary** — the npm package was just a wrapper around this binary anyway
 
 The npm path still works if you need it, but this repo standardizes on the native installer.
+
+> **Why not `apk add claude-code`?** Anthropic does publish a [signed apk repository](https://code.claude.com/docs/en/setup) for Alpine. We deliberately don't use it here: apk-installed packages live on the root filesystem, so they're wiped on every HA OS update, and the apk build doesn't self-update. The native installer's binary lands in `/root/.local/bin` and auto-updates itself — one less thing to reinstall.
 
 ## Usage
 
@@ -202,7 +209,7 @@ The install script creates `/config/.env` from the template. Edit it with your t
 
 ```bash
 # /config/.env
-HA_URL=https://172.30.32.1:8128   # Internal HA API URL (HA OS default)
+HA_URL=http://172.30.32.1:8123    # Internal HA API URL (HA OS default; use https:// only if you've configured SSL in HA)
 HA_TOKEN=your_token_here          # Long-lived access token
 ```
 
@@ -274,7 +281,7 @@ git pull origin main
 | System packages (python3, libgcc, libstdc++, ripgrep, etc.) | Installs via apk | Reinstalls (needed after HA update) |
 | Python websockets | pip install | Reinstalls (needed after HA update) |
 | Claude Code (native binary) | curl installer | Skips if already installed (auto-updates itself) |
-| `~/.claude/settings.json` | Writes `USE_BUILTIN_RIPGREP=0` (Alpine/musl) | Skips if exists |
+| `~/.claude/settings.json` | Writes stable update channel + `USE_BUILTIN_RIPGREP=0` (Alpine/musl) | Skips if exists |
 | `ha-api`, `ha-ws`, `lovelace-sync` | **Symlinks** to repo's `bin/` | Recreates (safe) |
 | `CLAUDE.md` | **Copies** to `/config/` | Skips if exists (preserves customizations) |
 | `.env` | **Copies** template to `/config/.env` | Skips if exists (preserves your token) |
@@ -296,6 +303,8 @@ Re-running `install.sh` is idempotent either way: if the binary is there, it ski
 
 ### Troubleshooting
 
+**First move when anything's off:** run `claude doctor`. It prints install health, settings-file validation errors, and warnings with suggested fixes — without starting a session. Run it before digging into anything below, especially after an HA OS update.
+
 **`claude: command not found` after re-running install.sh**
 Your PATH didn't reload. Run `source /etc/profile.d/claude-ha.sh` or open a new shell.
 
@@ -306,7 +315,10 @@ The bundled ripgrep binary (glibc) can't run on Alpine (musl). Check that:
    ```bash
    mkdir -p ~/.claude
    cat > ~/.claude/settings.json <<'EOF'
-   { "env": { "USE_BUILTIN_RIPGREP": "0" } }
+   {
+     "autoUpdatesChannel": "stable",
+     "env": { "USE_BUILTIN_RIPGREP": "0" }
+   }
    EOF
    ```
 3. `echo $USE_BUILTIN_RIPGREP` returns `0` in your current shell. If not, `source /etc/profile.d/claude-ha.sh`.

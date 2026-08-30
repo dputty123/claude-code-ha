@@ -1,6 +1,6 @@
 #!/bin/bash
 # Claude Code for Home Assistant - Setup Script
-# https://github.com/danbuhler/claude-code-ha
+# https://github.com/dputty123/claude-code-ha
 #
 # This script installs dependencies and sets up the CLI tools.
 #
@@ -26,22 +26,24 @@ elif command -v brew &> /dev/null; then
     INSTALL_CMD="brew install"
 else
     echo "Warning: Unknown package manager. Please install dependencies manually:"
-    echo "  python3, pip, curl, jq, nodejs, npm"
+    echo "  python3, pip, curl, jq, ripgrep"
     PKG_MANAGER="unknown"
 fi
 
 # Install system dependencies
+# libgcc/libstdc++/ripgrep are required by the Claude Code native binary on
+# Alpine/musl (HA OS). See README "Prerequisites".
 if [ "$PKG_MANAGER" != "unknown" ]; then
     echo "Installing system packages..."
     case "$PKG_MANAGER" in
         apk)
-            $INSTALL_CMD python3 py3-pip npm nodejs curl jq
+            $INSTALL_CMD python3 py3-pip curl jq libgcc libstdc++ ripgrep
             ;;
         apt)
-            sudo $INSTALL_CMD python3 python3-pip curl jq nodejs npm
+            sudo $INSTALL_CMD python3 python3-pip curl jq ripgrep
             ;;
         brew)
-            $INSTALL_CMD python3 curl jq node
+            $INSTALL_CMD python3 curl jq ripgrep
             ;;
     esac
 fi
@@ -54,13 +56,12 @@ elif command -v pip &> /dev/null; then
     pip install websockets --quiet
 fi
 
-# Install Claude Code
+# Install Claude Code (native binary — the npm package is deprecated)
 echo "Installing Claude Code..."
-if command -v npm &> /dev/null; then
-    npm install -g @anthropic-ai/claude-code --silent 2>/dev/null || npm install -g @anthropic-ai/claude-code
+if command -v claude &> /dev/null || [ -x "$HOME/.local/bin/claude" ]; then
+    echo "  [skipped] Claude Code already installed (it auto-updates itself)"
 else
-    echo "Warning: npm not found. Please install Claude Code manually:"
-    echo "  npm install -g @anthropic-ai/claude-code"
+    curl -fsSL https://claude.ai/install.sh | bash
 fi
 
 # Make scripts executable
@@ -123,7 +124,9 @@ if [ -d "/etc/profile.d" ] && [ -w "/etc/profile.d" ]; then
     echo "Adding tools to PATH..."
     cat > "$PROFILE_FILE" << EOF
 # Claude Code for Home Assistant
-export PATH="\$PATH:$BIN_DIR:$SCRIPT_DIR/bin"
+export PATH="\$PATH:$BIN_DIR:$SCRIPT_DIR/bin:\$HOME/.local/bin"
+# Use system ripgrep — the bundled glibc binary can't run on Alpine/musl
+export USE_BUILTIN_RIPGREP=0
 EOF
     chmod +x "$PROFILE_FILE"
 fi
@@ -178,6 +181,30 @@ else
     echo "  [symlink] $CLAUDE_HOME -> $CLAUDE_PERSIST (fresh)"
 fi
 
+# Claude Code settings: system ripgrep (Alpine/musl) + stable release channel
+# (headless appliance — a week-old release beats debugging a regression over SSH).
+# Written after the persistence setup so it lands in /config/.claude-data when
+# ~/.claude is symlinked. Skipped if settings.json already exists.
+echo ""
+echo "Configuring Claude Code settings..."
+if [ -f "$CLAUDE_HOME/settings.json" ]; then
+    echo "  [skipped] $CLAUDE_HOME/settings.json already exists"
+    echo "            Recommended contents: {\"autoUpdatesChannel\": \"stable\", \"env\": {\"USE_BUILTIN_RIPGREP\": \"0\"}}"
+else
+    mkdir -p "$CLAUDE_HOME"
+    cat > "$CLAUDE_HOME/settings.json" << 'EOF'
+{
+  "autoUpdatesChannel": "stable",
+  "env": { "USE_BUILTIN_RIPGREP": "0" }
+}
+EOF
+    echo "  [written] $CLAUDE_HOME/settings.json (stable channel + system ripgrep)"
+fi
+# If a persistent snapshot exists but predates settings.json, copy it in too
+if [ -d "$CLAUDE_PERSIST" ] && [ ! -f "$CLAUDE_PERSIST/settings.json" ] && [ -f "$CLAUDE_HOME/settings.json" ] && [ ! -L "$CLAUDE_HOME" ]; then
+    cp "$CLAUDE_HOME/settings.json" "$CLAUDE_PERSIST/settings.json"
+fi
+
 echo ""
 echo "=== Setup Complete ==="
 echo ""
@@ -186,8 +213,9 @@ echo "  [symlinks - recreated each run]"
 echo "    ha-api, ha-ws, lovelace-sync -> $BIN_DIR/"
 echo ""
 echo "  [copies - only if not present, won't overwrite]"
-echo "    CLAUDE.md -> $HA_CONFIG/"
-echo "    .env      -> $HA_CONFIG/"
+echo "    CLAUDE.md     -> $HA_CONFIG/"
+echo "    .env          -> $HA_CONFIG/"
+echo "    settings.json -> $CLAUDE_HOME/"
 echo ""
 echo "Next steps:"
 if [ -f "$HA_CONFIG/.env" ]; then
