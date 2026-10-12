@@ -25,3 +25,4 @@ node_modules/
 Thumbs.db
 .claude/
 .claude-data/
+install.log
