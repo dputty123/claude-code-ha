@@ -64,7 +64,7 @@ def load_env(env_file):
 async def sync_lovelace(lovelace_file):
     """Push lovelace config to Home Assistant."""
     token = os.environ.get('HA_TOKEN')
-    url = os.environ.get('HA_URL', 'https://172.30.32.1:8128')
+    url = os.environ.get('HA_URL', 'http://172.30.32.1:8123')
 
     if not token:
         print("Error: HA_TOKEN not set")
